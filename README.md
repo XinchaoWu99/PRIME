@@ -9,7 +9,7 @@ PRIME is a Python package for **batch effect correction** in single-cell RNA-seq
 
 - **Ensemble random projections** of the expression matrix
 - **Consensus mutual nearest neighbor (MNN) graphs** built across many low-dimensional views
-- **(Spatial only)** Laplacian-regularized embedding that jointly respects MNN anchors and within-slice spatial neighborhoods
+- **(Spatial only)** Laplacian-regularized embedding that jointly respects MNN anchors and within-slice spatial neighborhoods, with an anchor-transport mode for sections separated by a strong technical offset
 
 Two main entry points cover both modalities:
 
@@ -195,6 +195,7 @@ prime.prime_st(
     layer=None,
     n_hvg=3000,
     hvg_flavor="seurat_v3",
+    integration="laplacian",      # "laplacian", "transport" or "fused"
     n_projections=10,
     rp_dim=50,
     k_mnn=20,
@@ -204,10 +205,12 @@ prime.prime_st(
     gate_spatial_by_expr=True,
     reweight_anchors_by_spatial_context=True,
     n_comps=30,
-    lambda_anchor=5.0,
-    lambda_spatial=1.0,
+    lambda_anchor=None,           # None: default of the mode (laplacian 5.0)
+    lambda_spatial=None,          # None: default of the mode (laplacian 1.0, transport 0.0)
     solver_tol=1e-5,
     solver_maxiter=200,
+    transport_step=0.5,
+    transport_anchor_kwargs=None,
     random_state=0,
     key_added="X_prime",
     store_graphs=False,
@@ -225,8 +228,9 @@ prime.prime_st(
 | `k_mnn` | k for cross-slice MNN search. |
 | `k_spatial` | k for within-slice spatial kNN graph. |
 | `mnn_strategy` | `"star"` anchors all slices to a hub, `"pairwise"` builds all pairwise MNNs (slower, denser). |
-| `lambda_anchor` | Weight on the cross-slice MNN Laplacian regularizer. |
-| `lambda_spatial` | Weight on the within-slice spatial Laplacian regularizer. |
+| `integration` | How anchors and the spatial graph are combined: `"laplacian"` (default), `"transport"` or `"fused"` (below). |
+| `lambda_anchor` | Weight on the cross-slice MNN Laplacian regularizer (`None`: default of the mode). |
+| `lambda_spatial` | Weight on the within-slice spatial Laplacian regularizer (`None`: default of the mode). |
 | `n_comps` | Output embedding dimension. |
 | `key_added` | Slot in `adata.obsm` where the integrated embedding is stored. |
 | `copy` | If `True`, return a corrected copy of `adata` instead of modifying in place. |
@@ -240,6 +244,21 @@ The integration solves
 ```
 
 where `L_anchor` is the Laplacian of the consensus MNN anchor graph, `L_spatial` is the within-slice spatial Laplacian, and `Z₀` is the TruncatedSVD embedding of HVG log1p-normalized expression. The linear system is solved column-wise by conjugate gradient.
+
+**Integration modes.** The equation above is the default mode, `integration="laplacian"`: anchors act as springs between matched spots and the spatial term smooths each slice. It suits slices that differ by a moderate batch effect, such as serial sections of one tissue block.
+
+| `integration` | What it does | Use it when |
+|---------------|--------------|-------------|
+| `"laplacian"` (default) | Solves `(I + λ_anchor·L_anchor + λ_spatial·L_spatial)·Z = Z₀`. | Slices are already roughly comparable (e.g. serial sections). |
+| `"transport"` | Finds anchors with the expression-only PRIME ensemble (the consensus graph of `ensemble_mnn_correct`, all slice pairs), moves every anchored spot `transport_step` of the way to its partners, and carries these corrections to all spots of the slice by harmonic interpolation over the spatial graph: `Z = (I + λ_spatial·L_spatial)⁻¹ (Z₀ + C)`. | Whole slices are displaced by a strong technical offset (e.g. FFPE vs. fresh-frozen vs. fixed-frozen preparations). |
+| `"fused"` (experimental) | Fuses the spatial graph and the anchor graph into one graph, regresses a correction field on it, then smooths on the same graph. | Exploring a single-graph formulation of the two modes above. |
+
+```python
+# Sections prepared with different protocols: align them by transporting anchor corrections over space
+prime.prime_st(adata, batch_key="sample", integration="transport")
+```
+
+`transport_anchor_kwargs` passes the settings of the anchor ensemble used by `"transport"` (`n_hvg`, `n_projections`, `target_dim`, `k_neighbors`, `consensus_threshold`). See the docstring of `prime.prime_st` for all mode-specific parameters.
 
 ---
 
@@ -415,6 +434,36 @@ prime/
 └── plotting/
     └── benchmark.py      # plot_scib_results_table, ...
 ```
+
+---
+
+## Reproducing the analyses of the paper
+
+Besides the package, the repository holds the code behind the results of the paper:
+
+```
+pipeline/     analysis scripts: integration benchmarks, parameter / anchor / ablation analyses of PRIME, spatial
+              benchmarks (DLPFC, Visium HD mouse brain), scaling, trajectories, scGPT zero-shot comparison
+notebooks/    one figure notebook per data set, drawing from the saved results of the pipeline
+tests/        unit tests of the package (pytest)
+```
+
+1. Set the data and output locations in [`pipeline/config.yaml`](pipeline/config.yaml) (or in an untracked
+   `pipeline/config.local.yaml`).
+2. Run the analyses you need. Every script of `pipeline/` states its command line, inputs and outputs in its header;
+   the header of [`pipeline/common.py`](pipeline/common.py) maps the folders.
+3. Draw the figures:
+
+| Notebook | Data | Figures |
+|----------|------|---------|
+| [`01_human_immune`](notebooks/01_human_immune.ipynb) | Human immune (33,506 cells, 10 batches) | scIB table, UMAPs, markers, Monocle3 trajectories, parameter sensitivity, trajectory comparison, scGPT |
+| [`02_NSCLC_lung_adenocarcinoma`](notebooks/02_NSCLC_lung_adenocarcinoma.ipynb) | NSCLC atlas (410,927 / 892,296 cells) | scIB table, UMAPs, robustness to the number of datasets, scaling, scGPT |
+| [`03_DLPFC`](notebooks/03_DLPFC.ipynb) | DLPFC, 12 Visium sections | spatial benchmark table, UMAPs, λ sensitivity, setting selection, spatial domains and markers |
+| [`04_Jurkat_293T`](notebooks/04_Jurkat_293T.ipynb) | Jurkat / 293T mixture | anchor validation, module ablation |
+| [`05_VisiumHD_mouse_brain`](notebooks/05_VisiumHD_mouse_brain.ipynb) | Visium HD mouse brain, three preservation protocols | integration of the three sections, region / layer labels |
+
+Run a notebook interactively, or all of them on a SLURM cluster with `bash notebooks/run_all.sh`. Figures are
+written to `figures/` (not tracked).
 
 ---
 

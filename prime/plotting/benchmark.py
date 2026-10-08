@@ -28,7 +28,7 @@ GROUP_ORDER: tuple[str, ...] = (
     "Total",
 )
 
-OUTPUT_DIR = Path("/mnt/nrdstor/wanlab/xinchaowu/SHARP_data/immune")
+OUTPUT_DIR = Path(".")
 PDF_FILENAME = "benchmark_results_pub.pdf"
 FIGSIZE = (7.0, 4.2)
 PDF_FONT_FAMILY = "Arial"

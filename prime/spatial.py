@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # ---- Standard / typing ----
 from inspect import signature
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Union
 
 # ---- Numeric / sparse ----
 import numpy as np
@@ -18,6 +18,16 @@ from sklearn.decomposition import TruncatedSVD
 # ---- Single-cell ----
 import scanpy as sc
 from anndata import AnnData
+
+from prime.core import build_consensus_graph
+
+# Default regularisation weights of each integration mode (used when the
+# corresponding argument of ``prime_st`` is left at None).
+_MODE_DEFAULTS = {
+    "laplacian": {"lambda_anchor": 5.0, "lambda_spatial": 1.0},
+    "transport": {"lambda_anchor": 0.0, "lambda_spatial": 0.0},
+    "fused": {"lambda_anchor": 10.0, "lambda_spatial": 0.1},
+}
 
 
 # ============================================================
@@ -272,6 +282,53 @@ def _build_rp_consensus_mnn_graph(
     return Wa
 
 
+def _ensemble_anchor_graph(
+    adata: AnnData,
+    batch_labels: np.ndarray,
+    batch_key: str,
+    *,
+    layer: Optional[str] = None,
+    target_sum: float = 1e4,
+    n_hvg: int = 2000,
+    hvg_flavor: str = "cell_ranger",
+    n_projections: int = 4,
+    target_dim: int = 128,
+    k_neighbors: int = 15,
+    consensus_threshold: float = 0.4,
+    random_state: int = 0,
+) -> csr_matrix:
+    """Anchor graph of the expression-only PRIME ensemble.
+
+    The consensus graph of :func:`prime.core.build_consensus_graph`, i.e. the
+    anchors :func:`prime.ensemble_mnn_correct` uses for scRNA-seq data, with
+    spots treated as cells: log1p CP10k of all genes, batch-aware HVGs, random
+    projections + mutual nearest neighbours between *every* pair of batches,
+    consensus vote ``>= consensus_threshold``. Unlike
+    :func:`_build_rp_consensus_mnn_graph` it does not use the HVG set or the
+    star topology of the spatial pipeline.
+
+    Returns a symmetric CSR graph holding cross-batch edges only, with edge
+    weight = vote fraction.
+    """
+    X_base = adata.layers[layer] if (layer is not None and layer in adata.layers) else adata.X
+    X_log = _row_norm_log1p(X_base, target_sum=target_sum)
+    tmp = AnnData(X=X_log, obs=adata.obs[[batch_key]].copy())
+    sc.pp.highly_variable_genes(tmp, n_top_genes=n_hvg, flavor=hvg_flavor, batch_key=batch_key)
+    X_hvg = X_log[:, tmp.var["highly_variable"].values]
+    G = build_consensus_graph(X_hvg, batch_labels, None, n_projections, target_dim, k_neighbors,
+                              consensus_threshold, random_state).tocoo()
+    cross = batch_labels[G.row] != batch_labels[G.col]
+    n = adata.n_obs
+    Wa = coo_matrix((G.data[cross].astype(np.float32), (G.row[cross], G.col[cross])),
+                    shape=(n, n), dtype=np.float32).tocsr()
+    Wa.sum_duplicates()
+    Wa.setdiag(0.0)
+    Wa.eliminate_zeros()
+    Wa = (Wa + Wa.T) * 0.5
+    Wa.eliminate_zeros()
+    return Wa
+
+
 # ============================================================
 # 3. Spatial graph + spatial context
 # ============================================================
@@ -286,11 +343,20 @@ def _build_spatial_graph(
     spatial_weight_mode: str = "rbf",   # "rbf" or "binary"
     gate_by_expr: bool = True,
     expr_gate_beta: float = 1.0,
+    exclude_self: bool = False,
     eps: float = 1e-8,
 ) -> csr_matrix:
     """
     Within-batch spatial kNN graph (symmetric).
     Edge weight =  RBF(spatial distance) * RBF(expression distance)^beta
+
+    ``exclude_self=False`` (default): the kNN query returns every spot as its
+    own first neighbour, so each spot has ``k_spatial - 1`` other neighbours,
+    the bandwidth medians include the zero self-distances, and an edge found
+    from both ends carries the sum of both directions.
+    ``exclude_self=True``: ``k_spatial`` neighbours besides the spot itself,
+    medians over real edges only, and every edge counted once (union of the two
+    directions).
     """
     n = spatial_coords.shape[0]
     rows, cols, w_list = [], [], []
@@ -304,8 +370,17 @@ def _build_spatial_graph(
         if k < 1:
             continue
 
-        nn = NearestNeighbors(n_neighbors=k, metric="euclidean", n_jobs=n_jobs).fit(coords)
-        dists, nbrs = nn.kneighbors(coords)
+        if exclude_self:
+            nn = NearestNeighbors(n_neighbors=k + 1, metric="euclidean", n_jobs=n_jobs).fit(coords)
+            dists, nbrs = nn.kneighbors(coords)
+            own = nbrs == np.arange(len(idx))[:, None]
+            drop = np.where(own.any(axis=1), own.argmax(axis=1), k)   # duplicated coordinates: drop the farthest
+            keep = np.ones_like(nbrs, dtype=bool)
+            keep[np.arange(len(idx)), drop] = False
+            nbrs, dists = nbrs[keep].reshape(len(idx), k), dists[keep].reshape(len(idx), k)
+        else:
+            nn = NearestNeighbors(n_neighbors=k, metric="euclidean", n_jobs=n_jobs).fit(coords)
+            dists, nbrs = nn.kneighbors(coords)
 
         r = np.repeat(idx, k)
         c = idx[nbrs.reshape(-1)]
@@ -325,7 +400,8 @@ def _build_spatial_graph(
             w_sp = w_sp * (w_expr ** expr_gate_beta)
 
         rows.append(r); cols.append(c); w_list.append(w_sp)
-        rows.append(c); cols.append(r); w_list.append(w_sp)
+        if not exclude_self:
+            rows.append(c); cols.append(r); w_list.append(w_sp)
 
     if not rows:
         return csr_matrix((n, n), dtype=np.float32)
@@ -333,6 +409,12 @@ def _build_spatial_graph(
     rows = np.concatenate(rows).astype(np.int64)
     cols = np.concatenate(cols).astype(np.int64)
     w = np.concatenate(w_list).astype(np.float32)
+
+    if exclude_self:   # the weight is symmetric in (i, j): the union of both directions counts every edge once
+        Ws = coo_matrix((w, (rows, cols)), shape=(n, n), dtype=np.float32).tocsr()
+        Ws = Ws.maximum(Ws.T).tocsr()
+        Ws.eliminate_zeros()
+        return Ws
 
     Ws = coo_matrix((w, (rows, cols)), shape=(n, n), dtype=np.float32).tocsr()
     Ws.sum_duplicates()
@@ -364,6 +446,39 @@ def _rbf_similarity(A: np.ndarray, rows: np.ndarray, cols: np.ndarray, eps: floa
     return np.exp(-d2 / (2.0 * sigma2)).astype(np.float32)
 
 
+def _reweight_anchors_by_spatial_context(
+    Wa: csr_matrix,
+    Ws: csr_matrix,
+    Z_ctx: np.ndarray,
+    power: float = 1.0,
+) -> csr_matrix:
+    """Down-weight anchors that join spots in dissimilar spatial neighbourhoods.
+
+    Every anchor weight is multiplied by ``RBF(S_i, S_j) ** power``, where ``S``
+    is the spatial-context vector of :func:`_spatial_context_from_graph`. RBF
+    similarity is symmetric, so the reweighted graph remains symmetric and
+    self-loop-free.
+    """
+    n = Wa.shape[0]
+    Wa_coo = Wa.tocoo()
+    rows = Wa_coo.row.astype(np.int64)
+    cols = Wa_coo.col.astype(np.int64)
+    w_expr = Wa_coo.data.astype(np.float32)
+
+    S = _spatial_context_from_graph(Ws, Z_ctx)
+    w_ctx = _rbf_similarity(S, rows, cols)
+    w_anchor = w_expr * (w_ctx ** float(power))
+
+    Wa = coo_matrix((w_anchor, (rows, cols)),
+                    shape=(n, n), dtype=np.float32).tocsr()
+    Wa.sum_duplicates()
+    Wa.setdiag(0.0)
+    Wa.eliminate_zeros()
+    Wa = (Wa + Wa.T) * 0.5
+    Wa.eliminate_zeros()
+    return Wa
+
+
 # ============================================================
 # 4. Laplacian + CG solver
 # ============================================================
@@ -380,11 +495,13 @@ def _cg_solve_matrix_rhs(
     *,
     tol: float = 1e-5,
     maxiter: int = 200,
+    x0_zero: bool = False,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
     Solve A X = B for multiple RHS columns using CG per column.
     Cross-version compatible with SciPy (old `tol=` and new `rtol=` APIs).
-    Uses Jacobi (diagonal) preconditioner.
+    Uses Jacobi (diagonal) preconditioner. The initial guess is B (default) or
+    zero (``x0_zero=True``, for systems whose solution is not close to B).
     """
     n, k = B.shape
 
@@ -400,7 +517,7 @@ def _cg_solve_matrix_rhs(
 
     for j in range(k):
         b = B[:, j].astype(np.float64)
-        x0 = b.copy()
+        x0 = np.zeros_like(b) if x0_zero else b.copy()
         if use_new_api:
             x, info = cg(A, b, x0=x0, rtol=tol, atol=0.0, maxiter=maxiter, M=M)
         else:
@@ -418,7 +535,186 @@ def _cg_solve_matrix_rhs(
 
 
 # ============================================================
-# 5. Main API: PRIME
+# 5. Correction fields over the spatial graph
+# ============================================================
+
+def _transport_corrections(
+    Z0: np.ndarray,
+    Wa: csr_matrix,
+    Ws: csr_matrix,
+    *,
+    step: float = 0.5,
+    mu: float = 1e3,
+    eps: float = 1e-6,
+    tol: float = 1e-6,
+    maxiter: int = 2000,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Anchor correction vectors, carried to every spot over the spatial graph.
+
+    Every anchored spot ``i`` gets the correction
+    ``c_i = step * sum_j w_ij (Z0_j - Z0_i) / sum_j w_ij`` over its cross-batch
+    anchors (``step = 0.5``: halfway to the partners, so anchored pairs meet).
+    The corrections are then carried to every spot of the same section by
+    harmonic interpolation over the within-section spatial graph,
+
+        (L_s + mu * M + eps * I) C = mu * M * C_raw,
+
+    with ``M`` the diagonal indicator of anchored spots: each spot receives a
+    spatially smooth average of the corrections of the anchored spots around it.
+    """
+    n = Z0.shape[0]
+    W = Wa.tocoo()
+    wsum = np.bincount(W.row, weights=W.data, minlength=n)
+    raw = np.zeros_like(Z0, dtype=np.float64)
+    np.add.at(raw, W.row, (Z0[W.col] - Z0[W.row]) * W.data[:, None])
+    has = wsum > 0
+    raw[has] /= wsum[has][:, None]
+    raw *= float(step)
+    A = (_laplacian(Ws).astype(np.float64) + diags(mu * has.astype(np.float64) + eps)).tocsr()
+    C, stats = _cg_solve_matrix_rhs(A, (mu * has[:, None] * raw).astype(np.float32), tol=tol, maxiter=maxiter)
+    stats = {f"transport_{k}": v for k, v in stats.items() if k != "cg_info_per_dim"}
+    stats["transport_anchored_spots"] = int(has.sum())
+    return C, stats
+
+
+def _unit_mean_degree(W: csr_matrix) -> Tuple[csr_matrix, float]:
+    """Scale W so that the mean weighted degree over the spots with at least one edge is 1."""
+    d = np.asarray(W.sum(axis=1)).ravel()
+    m = float(d[d > 0].mean()) if np.any(d > 0) else 1.0
+    return (W * (1.0 / m)).astype(np.float32).tocsr(), m
+
+
+def _select_lambda_anchor_cv(
+    Z0: np.ndarray,
+    Wa: csr_matrix,
+    Ws: csr_matrix,
+    grid=(0.001, 0.01, 0.1, 1.0, 10.0, 100.0),
+    *,
+    holdout: float = 0.2,
+    eps: float = 1e-4,
+    tol: float = 1e-5,
+    maxiter: int = 2000,
+    random_state: int = 0,
+) -> Tuple[float, Dict[str, float]]:
+    """Label-free choice of ``lambda_anchor`` by anchor cross-validation.
+
+    A random ``holdout`` fraction of the anchor pairs is set aside, the
+    alignment step of :func:`_fused_graph_regression` is fitted on the remaining
+    anchors for every value in ``grid``, and the value with the smallest
+    weighted mean squared distance between the held-out partners after
+    correction is returned (too small: the section offset is under-corrected;
+    too large: the correction follows the noise of single pairs, which does not
+    carry over to other pairs). The residual without correction is reported as
+    ``"none"``.
+    """
+    n = Z0.shape[0]
+    W = Wa.tocoo()
+    up = W.row < W.col
+    r, c, w = W.row[up], W.col[up], W.data[up].astype(np.float64)
+    rng = np.random.default_rng(random_state)
+    test = rng.random(r.size) < holdout
+    if test.sum() == 0 or (~test).sum() == 0:
+        return float(grid[len(grid) // 2]), {}
+    rt, ct, wt = r[~test], c[~test], w[~test]
+    Wtr = coo_matrix((np.r_[wt, wt], (np.r_[rt, ct], np.r_[ct, rt])), shape=(n, n)).tocsr()
+    La = _laplacian(Wtr).astype(np.float64)
+    Ls = _laplacian(Ws).astype(np.float64)
+    Z0d = Z0.astype(np.float64)
+    rv, cv, wv = r[test], c[test], w[test]
+
+    def resid(Z):
+        return float((wv * ((Z[rv] - Z[cv]) ** 2).sum(axis=1)).sum() / wv.sum())
+
+    scores = {"none": resid(Z0d)}
+    for lam in grid:
+        A = (Ls + lam * La + eps * identity(n, format="csr")).tocsr()
+        C, _ = _cg_solve_matrix_rhs(A, (-lam * (La @ Z0d)).astype(np.float32), tol=tol, maxiter=maxiter, x0_zero=True)
+        scores[f"{lam:g}"] = resid(Z0d + C)
+    best = min(grid, key=lambda lam: scores[f"{lam:g}"])
+    return float(best), scores
+
+
+def _fused_graph_regression(
+    Z0: np.ndarray,
+    Wa: csr_matrix,
+    Ws: csr_matrix,
+    batch_labels: np.ndarray,
+    *,
+    lambda_anchor: float,
+    lambda_spatial: float,
+    eps: float = 1e-4,
+    tol: float = 1e-6,
+    maxiter: int = 5000,
+    smooth_tol: float = 1e-5,
+    smooth_maxiter: int = 200,
+    robust_iters: int = 0,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Alignment and smoothing on one fused graph.
+
+    ``Wa`` (cross-section anchors) and ``Ws`` (within-section spatial graph),
+    both scaled to unit mean degree, are fused:
+
+        W_f = W_s + lambda_anchor * W_a,   L_f = L_s + lambda_anchor * L_a.
+
+    Step 1, alignment — Laplacian regression of a correction field C on the
+    fused graph:
+
+        min_C  sum_{(i,j) in W_f} w_ij || (c_i - c_j) - t_ij ||^2 + eps ||C||^2,
+
+    with ``t_ij = 0`` on spatial edges (neighbouring spots share the correction)
+    and ``t_ij = z0_j - z0_i`` on anchor edges (anchored partners coincide after
+    correction), i.e. ``(L_f + eps I) C = -lambda_anchor * L_a Z0``. A shift
+    common to a whole section is not penalised by the spatial term, so the
+    anchors of a section move it as a whole; ``lambda_anchor`` sets how far the
+    correction may bend within a section. Sections without anchors stay put.
+
+    Step 2, smoothing — Laplacian regularisation of the corrected embedding on
+    the same graph: ``(I + lambda_spatial * L_f) Z = Z0 + C``.
+
+    ``robust_iters > 0`` reweights step 1 iteratively: after each solve every
+    anchor weight is reset to its initial value times
+    ``exp(-r_ij^2 / (2 median r^2))``, ``r_ij = ||z_i - z_j||`` after
+    correction, so anchors the smooth correction cannot satisfy lose weight; the
+    reweighted anchor graph is then used in step 2.
+    """
+    n = Z0.shape[0]
+    Ls = _laplacian(Ws).astype(np.float64)
+    W0 = Wa.tocoo()
+    ar, ac, w0 = W0.row, W0.col, W0.data.astype(np.float64)
+    w = w0.copy()
+    for it in range(int(robust_iters) + 1):
+        La = _laplacian(coo_matrix((w, (ar, ac)), shape=(n, n)).tocsr()).astype(np.float64)
+        Lf = (Ls + lambda_anchor * La).tocsr()
+        B = -lambda_anchor * (La @ Z0.astype(np.float64))
+        C, st1 = _cg_solve_matrix_rhs((Lf + eps * identity(n, format="csr")).tocsr(), B.astype(np.float32),
+                                      tol=tol, maxiter=maxiter, x0_zero=True)
+        if it == int(robust_iters):
+            break
+        Zc = Z0.astype(np.float64) + C
+        d2 = ((Zc[ar] - Zc[ac]) ** 2).sum(axis=1)
+        w = w0 * np.exp(-d2 / (2.0 * (np.median(d2) + 1e-12)))
+    stats = {f"align_{k}": v for k, v in st1.items() if k != "cg_info_per_dim"}
+    stats["anchor_weight_retained"] = float(w.sum() / w0.sum()) if w0.sum() > 0 else 0.0
+    # share of the correction that is a rigid shift of each section (diagnostic)
+    shift = np.zeros_like(C, dtype=np.float64)
+    for b in np.unique(batch_labels):
+        m = batch_labels == b
+        shift[m] = C[m].mean(axis=0)
+    tot = float((C.astype(np.float64) ** 2).sum())
+    stats.update(correction_rms=float(np.sqrt(tot / n)),
+                 correction_section_shift_share=float((shift ** 2).sum() / tot) if tot > 0 else 0.0)
+    Z1 = (Z0 + C).astype(np.float32)
+    if lambda_spatial > 0:
+        A = (identity(n, format="csr") + lambda_spatial * Lf).tocsr()
+        Z, st2 = _cg_solve_matrix_rhs(A, Z1, tol=smooth_tol, maxiter=smooth_maxiter)
+        stats.update({f"smooth_{k}": v for k, v in st2.items() if k != "cg_info_per_dim"})
+    else:
+        Z = Z1
+    return Z.astype(np.float32), stats
+
+
+# ============================================================
+# 6. Main API: PRIME
 # ============================================================
 
 def prime_st(
@@ -431,6 +727,8 @@ def prime_st(
     n_hvg: int = 3000,
     hvg_flavor: str = "seurat_v3",
     target_sum: float = 1e4,
+    # Integration mode
+    integration: str = "laplacian",       # "laplacian", "transport" or "fused"
     # ERP MNN anchors
     n_projections: int = 10,
     rp_dim: int = 50,
@@ -441,6 +739,7 @@ def prime_st(
     k_spatial: int = 6,
     gate_spatial_by_expr: bool = True,
     expr_gate_beta: float = 1.0,
+    spatial_graph_exclude_self: Optional[bool] = None,   # None: True for "fused", False otherwise
     # Anchor reweighting by spatial context
     reweight_anchors_by_spatial_context: bool = True,
     spatial_power: float = 1.0,
@@ -450,10 +749,16 @@ def prime_st(
     # Projection method for the context (Z_gate) and base (Z0) embeddings
     context_method: str = "svd",            # "svd" or "random_projection"
     base_embedding_method: str = "svd",     # "svd" or "random_projection" (experimental)
-    lambda_anchor: float = 5.0,
-    lambda_spatial: float = 1.0,
+    lambda_anchor: Optional[Union[float, str]] = None,   # None: mode default; "auto" (fused only): cross-validation
+    lambda_spatial: Optional[float] = None,              # None: mode default
     solver_tol: float = 1e-5,
     solver_maxiter: int = 200,
+    # Transport / fused modes
+    transport_step: float = 0.5,
+    transport_anchor_kwargs: Optional[Dict[str, Any]] = None,
+    anchor_source: str = "ensemble",      # fused mode: "ensemble" or "spatial"
+    fused_eps: float = 1e-4,
+    fused_robust_iters: int = 0,
     # Misc
     n_jobs: int = 1,
     random_state: int = 0,
@@ -466,19 +771,108 @@ def prime_st(
     """
     PRIME: Projection-based Robust Integration with Mutual-NN and spatial Embedding.
 
-    Integrate multiple Visium / spatial transcriptomics slices by solving:
+    Integrate multiple Visium / spatial transcriptomics slices. Every mode
+    starts from the same two ingredients:
 
-        (I + lambda_anchor * L_a + lambda_spatial * L_s) Z = Z0
+    * ``Z0`` — the TruncatedSVD embedding of HVG-only log1p data (``n_comps``);
+    * ``W_s`` — the within-batch spatial kNN graph (``k_spatial``; edge weight =
+      spatial RBF x expression RBF), with Laplacian ``L_s``;
 
-    where L_a is the graph Laplacian of an ERP-consensus MNN anchor graph
-    (across batches) and L_s is the Laplacian of within-batch spatial kNN graphs.
-    Z0 is the TruncatedSVD embedding of HVG-only log1p data.
+    and combines them with cross-batch anchors found by ensemble random
+    projection + consensus MNN. Random projection is the natural choice for the
+    anchor search because MNN is distance-based and the Johnson-Lindenstrauss
+    lemma makes random projection approximately distance-preserving.
 
-    The anchor graph (L_a) is always built by ensemble random projection +
-    consensus MNN (see :func:`_build_rp_consensus_mnn_graph`); random projection
-    is the natural choice there because MNN is distance-based and the
-    Johnson-Lindenstrauss lemma makes random projection approximately
-    distance-preserving.
+    Integration modes
+    -----------------
+    integration : {"laplacian", "transport", "fused"}, default "laplacian"
+
+        ``"laplacian"`` — Laplacian-regularised embedding
+
+            (I + lambda_anchor * L_a + lambda_spatial * L_s) Z = Z0
+
+          ``L_a`` is the Laplacian of the ERP-consensus MNN anchor graph of the
+          spatial pipeline (:func:`_build_rp_consensus_mnn_graph`:
+          ``n_projections``, ``rp_dim``, ``k_mnn``, ``consensus_threshold``,
+          ``mnn_strategy``; optionally reweighted by spatial context). Anchors
+          act as springs between matched spots and the spatial term smooths
+          each section. Defaults: ``lambda_anchor=5.0``, ``lambda_spatial=1.0``.
+
+        ``"transport"`` — anchor corrections carried over the spatial graph
+
+            Z = (I + lambda_spatial * L_s)^-1 (Z0 + C)
+
+          Anchors come from the expression-only PRIME ensemble
+          (:func:`_ensemble_anchor_graph`, i.e. the consensus graph of
+          :func:`prime.ensemble_mnn_correct` between all batch pairs; settings
+          in ``transport_anchor_kwargs``). Every anchored spot gets the
+          correction ``transport_step * (weighted mean of its partners - itself)``
+          in ``Z0``, and the corrections are carried to all spots of the same
+          section by harmonic interpolation over the spatial graph
+          (:func:`_transport_corrections`). Sections are thereby moved onto each
+          other, as ``ensemble_mnn_correct`` moves cells with its correction
+          vectors, but the correction varies smoothly in space rather than in
+          expression. Default ``lambda_spatial=0.0`` (no smoothing afterwards).
+          ``n_projections``, ``rp_dim``, ``k_mnn``, ``consensus_threshold``,
+          ``mnn_strategy``, ``reweight_anchors_by_spatial_context`` and
+          ``lambda_anchor`` are not used.
+
+        ``"fused"`` — alignment and smoothing on one fused graph (experimental)
+
+            W_f = W_s + lambda_anchor * W_a
+            (L_f + eps I) C = -lambda_anchor * L_a Z0        (alignment)
+            (I + lambda_spatial * L_f) Z = Z0 + C             (smoothing)
+
+          The spatial graph (kNN without the spot itself, each edge counted
+          once) and the anchor graph (``anchor_source``), both scaled to unit
+          mean degree, are fused into one graph. Step 1 regresses a correction
+          field on it — spatial neighbours share the correction, anchored
+          partners coincide after correction, and a shift of a whole section is
+          free; step 2 is the Laplacian regularisation of the ``"laplacian"``
+          mode on the corrected embedding and the same graph
+          (:func:`_fused_graph_regression`). ``lambda_anchor`` sets how far the
+          correction may bend within a section (small: close to a rigid shift
+          of each section). Defaults: ``lambda_anchor=10.0``,
+          ``lambda_spatial=0.1``.
+
+    Choosing a mode: in the ``"laplacian"`` solve the anchors only add springs
+    between already similar spot pairs and the identity term keeps every other
+    spot at ``Z0``, so it suits sections that differ by a moderate batch effect
+    (e.g. serial sections of one tissue block). When whole sections are
+    displaced by a strong technical offset (e.g. different preservation
+    protocols), ``"transport"`` removes the offset by moving every spot of a
+    section.
+
+    Mode-specific parameters
+    ------------------------
+    lambda_anchor, lambda_spatial : float, optional
+        Regularisation weights; ``None`` selects the mode default given above.
+        In the ``"fused"`` mode ``lambda_anchor="auto"`` chooses the value by
+        anchor cross-validation (:func:`_select_lambda_anchor_cv`); this follows
+        the anchors, including their spatially coherent errors, tends to select
+        large values, and is not recommended as a default.
+    transport_step : float, default 0.5
+        Fraction of the way each anchored spot is moved towards its partners
+        (``"transport"``).
+    transport_anchor_kwargs : dict, optional
+        Settings of the expression-only anchor ensemble used by ``"transport"``
+        and by ``"fused"`` with ``anchor_source="ensemble"``: ``n_hvg`` (2000),
+        ``hvg_flavor`` ("cell_ranger"), ``n_projections`` (4), ``target_dim``
+        (128), ``k_neighbors`` (15), ``consensus_threshold`` (0.4).
+    anchor_source : {"ensemble", "spatial"}, default "ensemble"
+        Anchor graph of the ``"fused"`` mode: the expression-only ensemble or
+        the anchor graph of the ``"laplacian"`` mode. Either is reweighted by
+        spatial-context similarity when
+        ``reweight_anchors_by_spatial_context`` is set.
+    spatial_graph_exclude_self : bool, optional
+        Build the spatial kNN graph without the spot itself (see
+        :func:`_build_spatial_graph`). ``None``: True for ``"fused"``, False
+        otherwise.
+    fused_eps : float, default 1e-4
+        Ridge term of the alignment step (``"fused"``).
+    fused_robust_iters : int, default 0
+        Rounds of residual-based anchor reweighting in the alignment step
+        (``"fused"``); 0 disables it.
 
     Projection-method controls
     --------------------------
@@ -494,6 +888,13 @@ def prime_st(
         whereas random projection preserves distances but does not order
         components by variance, so it changes the embedding objective.
         **Experimental.**
+
+    Returns
+    -------
+    ``None`` (the embedding is written to ``adata.obsm[key_added]``) or the
+    integrated copy of ``adata`` when ``copy=True``. With ``store_graphs=True``
+    the anchor graph, the spatial graph, the settings and solver statistics are
+    stored in ``adata.uns[graph_key]``.
     """
 
     if copy:
@@ -503,10 +904,23 @@ def prime_st(
         raise ValueError(f"{batch_key} not in adata.obs")
     if spatial_key not in adata.obsm:
         raise ValueError(f"{spatial_key} not in adata.obsm")
+    if integration not in _MODE_DEFAULTS:
+        raise ValueError("integration must be 'laplacian', 'transport' or 'fused'")
+    if anchor_source not in ("ensemble", "spatial"):
+        raise ValueError("anchor_source must be 'ensemble' or 'spatial'")
     if context_method not in ("svd", "random_projection"):
         raise ValueError("context_method must be 'svd' or 'random_projection'")
     if base_embedding_method not in ("svd", "random_projection"):
         raise ValueError("base_embedding_method must be 'svd' or 'random_projection'")
+    if isinstance(lambda_anchor, str) and not (integration == "fused" and lambda_anchor == "auto"):
+        raise ValueError("lambda_anchor must be a number (or 'auto' with integration='fused')")
+
+    if lambda_spatial is None:
+        lambda_spatial = _MODE_DEFAULTS[integration]["lambda_spatial"]
+    if lambda_anchor is None:
+        lambda_anchor = _MODE_DEFAULTS[integration]["lambda_anchor"]
+    if spatial_graph_exclude_self is None:
+        spatial_graph_exclude_self = integration == "fused"
 
     batch_labels = adata.obs[batch_key].values
     spatial_coords = np.asarray(adata.obsm[spatial_key])
@@ -515,7 +929,7 @@ def prime_st(
 
     if verbose:
         sc.logging.info(
-            f"[PRIME] n={n:,}, batches={nb}, "
+            f"[PRIME] n={n:,}, batches={nb}, integration={integration}, "
             f"n_hvg={n_hvg}, n_proj={n_projections}, rp_dim={rp_dim}, k_mnn={k_mnn}, "
             f"k_spatial={k_spatial}, n_comps={n_comps}"
         )
@@ -567,65 +981,131 @@ def prime_st(
         spatial_weight_mode="rbf",
         gate_by_expr=gate_spatial_by_expr,
         expr_gate_beta=expr_gate_beta,
+        exclude_self=spatial_graph_exclude_self,
     )
 
-    # ---- 5) ERP consensus MNN anchor graph ----
-    # Ensemble random projection + consensus MNN — the prime.core principle,
-    # delegated to a reusable helper. Returns a symmetric, self-loop-free CSR
-    # anchor graph whose edge weights are consensus frequencies.
-    Wa = _build_rp_consensus_mnn_graph(
-        X_log_hvg, batch_labels,
-        n_projections=n_projections,
-        rp_dim=rp_dim,
-        k_mnn=k_mnn,
-        consensus_threshold=consensus_threshold,
-        mnn_strategy=mnn_strategy,
-        n_jobs=n_jobs,
-        random_state=random_state,
-    )
+    # ---- 5) Cross-batch anchor graph ----
+    # "laplacian" (and "fused" with anchor_source="spatial"): ensemble random
+    # projection + consensus MNN on the HVG matrix of this pipeline — the
+    # prime.core principle, delegated to a reusable helper.
+    # "transport" (and "fused" with anchor_source="ensemble"): the consensus
+    # graph of the expression-only ensemble, all batch pairs.
+    # Either way: a symmetric, self-loop-free CSR graph whose edge weights are
+    # consensus frequencies.
+    use_ensemble_anchors = integration == "transport" or (integration == "fused" and anchor_source == "ensemble")
+    if use_ensemble_anchors:
+        Wa = _ensemble_anchor_graph(
+            adata, batch_labels, batch_key,
+            layer=layer, target_sum=target_sum, random_state=random_state,
+            **(transport_anchor_kwargs or {}),
+        )
+        if Wa.nnz == 0:
+            raise RuntimeError(
+                "No cross-batch anchors found by the expression-only ensemble. "
+                "Try lowering consensus_threshold or raising k_neighbors in transport_anchor_kwargs."
+            )
+    else:
+        Wa = _build_rp_consensus_mnn_graph(
+            X_log_hvg, batch_labels,
+            n_projections=n_projections,
+            rp_dim=rp_dim,
+            k_mnn=k_mnn,
+            consensus_threshold=consensus_threshold,
+            mnn_strategy=mnn_strategy,
+            n_jobs=n_jobs,
+            random_state=random_state,
+        )
 
-    # Optional spatial-context reweighting, applied after the anchor edges are
-    # built: each anchor (r, c) is down-weighted when the two spots sit in
-    # dissimilar spatial neighbourhoods. RBF similarity is symmetric, so the
-    # reweighted graph remains symmetric and self-loop-free.
-    if reweight_anchors_by_spatial_context and Ws.nnz > 0 and Wa.nnz > 0:
-        Wa_coo = Wa.tocoo()
-        rows = Wa_coo.row.astype(np.int64)
-        cols = Wa_coo.col.astype(np.int64)
-        w_expr = Wa_coo.data.astype(np.float32)
-
-        S = _spatial_context_from_graph(Ws, Z_gate)
-        w_ctx = _rbf_similarity(S, rows, cols)
-        w_anchor = w_expr * (w_ctx ** float(spatial_power))
-
-        Wa = coo_matrix((w_anchor, (rows, cols)),
-                        shape=(n, n), dtype=np.float32).tocsr()
-        Wa.sum_duplicates()
-        Wa.setdiag(0.0)
-        Wa.eliminate_zeros()
-        Wa = (Wa + Wa.T) * 0.5
-        Wa.eliminate_zeros()
+    # Optional spatial-context reweighting: each anchor (r, c) is down-weighted
+    # when the two spots sit in dissimilar spatial neighbourhoods. Not applied in
+    # the "transport" mode, whose corrections are spread over space afterwards.
+    if (integration != "transport" and reweight_anchors_by_spatial_context
+            and Ws.nnz > 0 and Wa.nnz > 0):
+        Wa = _reweight_anchors_by_spatial_context(Wa, Ws, Z_gate, spatial_power)
 
     if verbose:
         sc.logging.info(
             f"[PRIME] anchor edges={Wa.nnz:,}, spatial edges={Ws.nnz:,}"
         )
 
-    # ---- 6) Laplacian-regularized CG solve ----
-    La = _laplacian(Wa)
-    Ls = _laplacian(Ws)
+    graph_info: Dict[str, Any] = {}
 
-    A = (identity(n, format="csr", dtype=np.float32)
-         + (lambda_anchor * La).astype(np.float32)
-         + (lambda_spatial * Ls).astype(np.float32))
-    A.eliminate_zeros()
+    # ---- 6) Integration ----
+    if integration == "transport":
+        # Correction vectors of the anchored spots, interpolated over the spatial
+        # graph; optional spatial smoothing of the corrected embedding.
+        C, transport_stats = _transport_corrections(Z0, Wa, Ws, step=transport_step)
+        Z1 = (Z0 + C).astype(np.float32)
+        if lambda_spatial > 0:
+            A = (identity(n, format="csr", dtype=np.float32)
+                 + (lambda_spatial * _laplacian(Ws)).astype(np.float32))
+            Z, solver_stats = _cg_solve_matrix_rhs(
+                A.astype(np.float64).tocsr(), Z1,
+                tol=solver_tol, maxiter=solver_maxiter,
+            )
+        else:
+            Z, solver_stats = Z1, {}
+        solver_stats = {**solver_stats, **transport_stats}
+        graph_info = {
+            "transport_step": float(transport_step),
+            "transport_anchor_kwargs": dict(transport_anchor_kwargs or {}),
+        }
+        summary = f"anchored spots: {transport_stats['transport_anchored_spots']:,}"
 
-    Z, solver_stats = _cg_solve_matrix_rhs(
-        A.astype(np.float64).tocsr(),
-        Z0.astype(np.float32),
-        tol=solver_tol,
-        maxiter=solver_maxiter,
-    )
+    elif integration == "fused":
+        # One fused graph (unit-mean-degree spatial + anchor graphs): Laplacian
+        # regression of the correction field, then smoothing on the same graph.
+        Wa_u, deg_a = _unit_mean_degree(Wa)
+        Ws_u, deg_s = _unit_mean_degree(Ws)
+        cv_scores: Dict[str, float] = {}
+        if isinstance(lambda_anchor, str):      # "auto"
+            lambda_anchor, cv_scores = _select_lambda_anchor_cv(
+                Z0, Wa_u, Ws_u, eps=fused_eps, random_state=random_state,
+            )
+        Z, solver_stats = _fused_graph_regression(
+            Z0, Wa_u, Ws_u, batch_labels,
+            lambda_anchor=lambda_anchor,
+            lambda_spatial=lambda_spatial,
+            eps=fused_eps,
+            robust_iters=fused_robust_iters,
+            smooth_tol=solver_tol,
+            smooth_maxiter=solver_maxiter,
+        )
+        solver_stats.update({f"cv_resid_{k}": v for k, v in cv_scores.items()})
+        solver_stats.update(
+            anchor_edges=int(Wa.nnz),
+            spatial_edges=int(Ws.nnz),
+            anchored_spots=int((np.diff(Wa.indptr) > 0).sum()),
+            anchor_mean_degree=deg_a,
+            spatial_mean_degree=deg_s,
+        )
+        graph_info = {
+            "anchor_source": anchor_source,
+            "fused_eps": float(fused_eps),
+            "fused_robust_iters": int(fused_robust_iters),
+            "transport_anchor_kwargs": dict(transport_anchor_kwargs or {}),
+            "spatial_graph_exclude_self": bool(spatial_graph_exclude_self),
+        }
+        summary = (f"anchored spots: {solver_stats['anchored_spots']:,}, section-shift share of the "
+                   f"correction: {solver_stats['correction_section_shift_share']:.2f}")
+
+    else:
+        # Laplacian-regularized CG solve.
+        La = _laplacian(Wa)
+        Ls = _laplacian(Ws)
+
+        A = (identity(n, format="csr", dtype=np.float32)
+             + (lambda_anchor * La).astype(np.float32)
+             + (lambda_spatial * Ls).astype(np.float32))
+        A.eliminate_zeros()
+
+        Z, solver_stats = _cg_solve_matrix_rhs(
+            A.astype(np.float64).tocsr(),
+            Z0.astype(np.float32),
+            tol=solver_tol,
+            maxiter=solver_maxiter,
+        )
+        summary = f"cg converged dims: {solver_stats['cg_converged_dims']}/{n_comps}"
 
     adata.obsm[key_added] = Z.astype(np.float32)
 
@@ -633,6 +1113,7 @@ def prime_st(
         adata.uns[graph_key] = {
             "W_anchor": Wa,
             "W_spatial": Ws,
+            "integration": integration,
             "n_hvg": int(hvg_mask.sum()),
             "anchor_projection_method": "random_projection",
             "context_method": context_method,
@@ -643,6 +1124,7 @@ def prime_st(
             "k_mnn": int(k_mnn),
             "consensus_threshold": float(consensus_threshold),
             "mnn_strategy": mnn_strategy,
+            "k_spatial": int(k_spatial),
             "random_state": int(random_state),
             "lambda_anchor": float(lambda_anchor),
             "lambda_spatial": float(lambda_spatial),
@@ -651,13 +1133,14 @@ def prime_st(
             "gate_spatial_by_expr": bool(gate_spatial_by_expr),
             "expr_gate_beta": float(expr_gate_beta),
             "solver": "cg",
-            **solver_stats,
+            **graph_info,
+            **{k: v for k, v in solver_stats.items()
+               if integration == "laplacian" or k != "cg_info_per_dim"},
         }
 
     if verbose:
         sc.logging.info(
-            f"[PRIME] stored adata.obsm['{key_added}'] "
-            f"(cg converged dims: {solver_stats['cg_converged_dims']}/{n_comps})"
+            f"[PRIME] stored adata.obsm['{key_added}'] ({summary})"
         )
 
     return adata if copy else None

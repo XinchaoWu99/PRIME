@@ -141,26 +141,21 @@ def _find_mutual_neighbors_sets(
     match_b2_to_b1: np.ndarray
 ) -> np.ndarray:
     """
-    Find mutual nearest neighbors using set operations.
-    More memory efficient than sparse matrix multiplication.
+    Find mutual nearest neighbors: pairs (i, j) with j among the neighbours of i
+    and i among the neighbours of j.
+
+    Each pair is encoded as the integer ``i * n_b2 + j``; the reverse pairs that
+    are also forward pairs are kept. Pairs are returned ordered by j, then by
+    neighbour rank.
     """
-    n_b1 = match_b1_to_b2.shape[0]
-    n_b2 = match_b2_to_b1.shape[0]
-    
-    # Create forward mapping: B1 -> B2
-    forward_edges = set()
-    for i in range(n_b1):
-        for j in match_b1_to_b2[i]:
-            forward_edges.add((i, j))
-    
-    # Check reverse mapping: B2 -> B1
-    mutual_pairs = []
-    for j in range(n_b2):
-        for i in match_b2_to_b1[j]:
-            if (i, j) in forward_edges:
-                mutual_pairs.append([i, j])
-    
-    return np.array(mutual_pairs) if mutual_pairs else np.array([]).reshape(0, 2)
+    n_b1, k1 = match_b1_to_b2.shape
+    n_b2, k2 = match_b2_to_b1.shape
+
+    forward = np.repeat(np.arange(n_b1, dtype=np.int64), k1) * n_b2 + match_b1_to_b2.ravel()
+    rev_i = match_b2_to_b1.ravel().astype(np.int64)
+    rev_j = np.repeat(np.arange(n_b2, dtype=np.int64), k2)
+    keep = np.isin(rev_i * n_b2 + rev_j, forward)
+    return np.stack([rev_i[keep], rev_j[keep]], axis=1)
 
 def build_consensus_graph(
     X: Optional[Union[np.ndarray, csr_matrix]],
@@ -188,9 +183,11 @@ def build_consensus_graph(
         X_norm = normalize(X, axis=1)
     
     if use_incremental:
-        # Use dictionary for incremental edge counting
-        edge_counts = {}
-        
+        # Edge votes: every directed MNN edge (r, c) of a projection is encoded as
+        # r * n_cells + c (an edge occurs at most once per projection); votes are
+        # counted with np.unique.
+        edge_keys = []
+
         for i in range(n_projections):
             # Get or generate projection
             if projections is not None:
@@ -205,23 +202,19 @@ def build_consensus_graph(
                 X_proj, batch_labels, k_neighbors
             )
             
-            # Update edge counts
-            for r, c in zip(rows, cols):
-                edge_counts[(r, c)] = edge_counts.get((r, c), 0) + 1
-            
+            edge_keys.append(np.asarray(rows, dtype=np.int64) * n_cells + np.asarray(cols, dtype=np.int64))
+
             # Clean up projection if generated
             if projections is None:
                 del X_proj
                 gc.collect()
-        
-        # Build final consensus matrix
-        valid_edges = [(k, v/n_projections) for k, v in edge_counts.items() 
-                       if v/n_projections >= consensus_threshold]
-        
-        if valid_edges:
-            edges, weights = zip(*valid_edges)
-            rows, cols = zip(*edges)
-            consensus = csr_matrix((weights, (rows, cols)), 
+
+        # Consensus matrix: weight = votes / n_projections, kept if >= threshold
+        keys, votes = np.unique(np.concatenate(edge_keys), return_counts=True)
+        frac = votes / n_projections
+        keep = frac >= consensus_threshold
+        if keep.any():
+            consensus = csr_matrix((frac[keep], (keys[keep] // n_cells, keys[keep] % n_cells)),
                                   shape=(n_cells, n_cells), dtype=np.float32)
         else:
             consensus = csr_matrix((n_cells, n_cells), dtype=np.float32)
@@ -265,6 +258,48 @@ def build_consensus_graph(
     return consensus
 
 
+def _self_knn(X: Union[np.ndarray, csr_matrix], k: int, block_bytes: int = 1 << 28):
+    """Exact k nearest neighbours of every row of X among all rows (itself included).
+
+    Same arithmetic as ``NearestNeighbors(metric='euclidean').fit(X).kneighbors(X)``
+    on its brute-force path for float32 input: squared distances
+    ``-2 x.y + |x|^2 + |y|^2`` accumulated in float64, cast back to the input
+    dtype, clipped at 0, self-distance set to 0, then argpartition / argsort /
+    sqrt. The float64 copy of X is made once and row blocks (about
+    ``block_bytes`` of distances each) run in parallel threads.
+    """
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+    from threadpoolctl import threadpool_limits
+
+    dtype = X.dtype
+    X64 = X.astype(np.float64).toarray() if issparse(X) else np.asarray(X, dtype=np.float64)
+    sq = np.einsum("ij,ij->i", X64, X64)
+    n = X64.shape[0]
+    rows_per_task = max(16, block_bytes // (8 * n))
+    dist = np.empty((n, k), dtype=dtype)
+    ind = np.empty((n, k), dtype=np.intp)
+
+    def block(start):
+        stop = min(start + rows_per_task, n)
+        d = -2 * (X64[start:stop] @ X64.T)
+        d += sq[start:stop, None]
+        d += sq[None, :]
+        d = d.astype(dtype, copy=False)
+        np.maximum(d, 0, out=d)
+        d[np.arange(stop - start), np.arange(start, stop)] = 0
+        r = np.arange(stop - start)[:, None]
+        nb = np.argpartition(d, k - 1, axis=1)[:, :k]
+        nb = nb[r, np.argsort(d[r, nb])]
+        dist[start:stop], ind[start:stop] = np.sqrt(d[r, nb]), nb
+
+    # CPUs available to this process (respects cgroup / scheduler limits where the OS reports them)
+    workers = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    with threadpool_limits(1), ThreadPoolExecutor(workers) as ex:
+        list(ex.map(block, range(0, n, rows_per_task)))
+    return dist, ind
+
+
 def _compute_smoothing_matrix(
     X: Union[np.ndarray, csr_matrix], 
     sigma: float = 1.0,
@@ -275,9 +310,7 @@ def _compute_smoothing_matrix(
     """
     print("Computing smoothing kernel...")
     X_norm = normalize(X, axis=1)
-    nn = NearestNeighbors(n_neighbors=k_smooth, metric='euclidean', n_jobs=-1)
-    nn.fit(X_norm)
-    distances, indices = nn.kneighbors(X_norm)
+    distances, indices = _self_knn(X_norm, k_smooth)
     
     # Gaussian kernel weights: exp(-dist^2 / sigma)
     weights = np.exp(-distances**2 / sigma)
@@ -353,12 +386,14 @@ def ensemble_mnn_correct(
     
     if len(rows) == 0:
         print("Warning: No cross-batch MNNs found. Data unchanged.")
-        if not inplace: return adata
+        if not inplace:   # same return type as the normal path: the (uncorrected) matrix
+            return X.toarray() if issparse(X) else np.array(X)
         return
-    
-    # Pre-calculate weight sums for normalization
-    weight_sums = np.zeros(n_cells)
-    np.add.at(weight_sums, rows, weights)
+
+    # Weight sums for normalization (summed in edge order)
+    weight_sums = np.bincount(rows, weights=weights, minlength=n_cells).astype(np.float64)
+    # rows come sorted from consensus_graph.nonzero(): the edges of a cell form one contiguous run
+    anchor_cells, run_starts = np.unique(rows, return_index=True)
     
     # 3. Build Smoothing Matrix
     smoothing_mat = _compute_smoothing_matrix(X, sigma=sigma)
@@ -399,7 +434,9 @@ def ensemble_mnn_correct(
         diffs = X_chunk[cols] - X_chunk[rows]
         weighted_diffs = diffs * weights[:, np.newaxis]
         
-        np.add.at(raw_correction_chunk, rows, weighted_diffs)
+        # Per-cell sum of the weighted pull vectors over each contiguous run of edges
+        # (sequential, in edge order, accumulated in float64)
+        raw_correction_chunk[anchor_cells] = np.add.reduceat(weighted_diffs, run_starts, axis=0, dtype=np.float64)
         
         # Normalize
         has_correction = weight_sums > 0

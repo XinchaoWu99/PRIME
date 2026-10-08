@@ -1,0 +1,161 @@
+# Visium HD mouse brain: curated region / layer annotation, applied by `annotate_regions.py apply`.
+# level dom_r1 = region-level Leiden clusters (own + neighbourhood PCs, resolution 1) of each section on its own;
+# level sub_CTXhi = the isocortex-like domains re-clustered (subcluster_spec.tsv, resolution 1.0) and annotated into layers.
+# Evidence = cluster means of the marker panel (x100 log1p CP10k), top Wilcoxon DE genes, position on the section map;
+# CellTypist (Allen WMB) subclass shares are quoted only as a reference. "nan" = not scored (mixed / scattered / tiny).
+# Region names follow Allen CCFv3; TH split by Prkcd (high in the sensory-motor / lateral nuclei, low in the
+# midline, intralaminar and anterior nuclei), which is the split visible in every section.
+sample	level	cluster	annotation	note
+FFPE	dom_r1	0	fiber tracts	Mbp 462, Plp1/Mobp/Mal DE; corpus callosum / alveus
+FFPE	dom_r1	1	CA3	Bok 62, Crym 30, Cabp7/Chgb DE; CT CA3 Glut 0.26
+FFPE	dom_r1	2	HIP neuropil	Ddn, Camk2a, mt-genes DE, Gfap 91, no soma markers; strata oriens/radiatum/lacunosum-moleculare + DG molecular layer
+FFPE	dom_r1	3	fiber tracts	Mbp 488; internal capsule / cerebral peduncle
+FFPE	dom_r1	4	RT	Pvalb 231, Gad1 136, Six3 DE; reticular nucleus of the thalamus
+FFPE	dom_r1	5	nan	pial rim -> re-clustered in sub_CTX
+FFPE	dom_r1	6	vessels	Acta2/Tagln/Myh11 DE, Cldn5 65; large vessels
+FFPE	dom_r1	7	nan	L6b band -> sub_CTX
+FFPE	dom_r1	8	nan	99 bins, mixed OPC / vascular / L6 signal
+FFPE	dom_r1	9	PIR	Slc17a7 246, Calb1 70, Wfs1 74; CT L2/3 IT PIR-ENTl 0.42; ventrolateral surface band
+FFPE	dom_r1	10	STR	Ppp1r1b 209, Penk 263, Rgs9/Gpr88 DE; caudoputamen
+FFPE	dom_r1	11	CA1	Fibcd1 38, Wfs1 65; CT CA1-ProS 0.18
+FFPE	dom_r1	12	nan	deep isocortex band -> sub_CTX
+FFPE	dom_r1	13	nan	retrosplenial cortex -> sub_CTX
+FFPE	dom_r1	14	nan	upper isocortex band -> sub_CTX
+FFPE	dom_r1	15	nan	lateral cortex -> sub_CTX
+FFPE	dom_r1	16	TH Prkcd+	Prkcd 230, Tcf7l2 105, Rora/Pcp4 DE; CT TH Prkcd Grin2c 0.50; dorsolateral thalamus
+FFPE	dom_r1	17	TH Prkcd-	Prkcd 81, Tcf7l2 114, Foxp2 59, Cbln1/Cbln4 DE; CT PF Fzd5 0.27; medial thalamus (PF)
+FFPE	dom_r1	18	meninges	Ptgds 237, Apod/Apoe DE; hippocampal fissure / velum
+FFPE	dom_r1	19	HY	Sparc, Nap1l5, Ndn, Peg3 DE, Mbp 258, Penk 32; lateral hypothalamus / ZI
+FFPE	dom_r1	20	HY	Hap1, Nnat, Baiap3, Resp18 DE, Otp 15, Th 9; medial hypothalamus
+FFPE	dom_r1	21	PIR	Cxcl14 74, Reln 25, Gfap 95, astro / mt DE; molecular layer of the piriform cortex
+FFPE	dom_r1	22	choroid plexus	Ttr 242, Foxj1 70, Ccdc153 DE; lateral ventricle
+FFPE	dom_r1	23	STN	Pvalb 116, Foxp2 43, Nxph4 33; CT STN-PSTN Pitx2 0.11
+FFPE	dom_r1	24	sAMY/BST	Penk 162, Wfs1 106, Gad1 42; CT CEA-BST Six3 0.10
+FFPE	dom_r1	25	AMY BLA	Slc17a7 176, C1ql3 DE; CT LA-BLA-BMA-PA 0.09
+FFPE	dom_r1	26	AMY MEA/COA	Hap1, Gap43 DE, Calb1 63; CT MEA-COA-BMA 0.07
+FFPE	dom_r1	27	nan	147 scattered microglia bins
+FFPE	dom_r1	28	TH Prkcd+	Prkcd 247, Tcf7l2 69, Pvalb 61; CT TH Prkcd Grin2c 0.49; ventral thalamus (VPM/VPL)
+FFPE	dom_r1	29	DG	Prox1 137, C1ql2 113; CT DG Glut 0.67
+FFPE	dom_r1	30	HAB	Tac2 53, Calb2/Zic1 DE, Syt6 33; CT MH Tac2 0.14; medial + lateral habenula
+FixedFrozen	dom_r1	0	nan	retrosplenial cortex -> sub_CTX
+FixedFrozen	dom_r1	1	nan	lateral cortex (deep) -> sub_CTX
+FixedFrozen	dom_r1	2	sAMY/BST	Penk 141, Wfs1 90, Gad1 79, Meis2/Slc32a1 DE
+FixedFrozen	dom_r1	3	nan	pial rim -> sub_CTX
+FixedFrozen	dom_r1	4	nan	upper isocortex band -> sub_CTX
+FixedFrozen	dom_r1	5	vessels	Rgs5/Igfbp7 DE, Cldn5 74; 428 bins in blobs
+FixedFrozen	dom_r1	6	nan	middle isocortex band -> sub_CTX
+FixedFrozen	dom_r1	7	HAB	Tac2 79, Syt6 47, Zic1/Necab2/Gng8 DE; CT MH Tac2 0.27 + LH Pou4f1 0.13
+FixedFrozen	dom_r1	8	TH Prkcd+	Prkcd 234, Tcf7l2 101; CT TH Prkcd Grin2c 0.54
+FixedFrozen	dom_r1	9	TH Prkcd-	Prkcd 77, Tcf7l2 125, Calb1 109, Slc17a6/Shox2 DE; CT CM-IAD-CL-PCN 0.03; midline / intralaminar
+FixedFrozen	dom_r1	10	CA3	Bok 96, Crym 46, Cabp7 DE; CT CA3 Glut 0.32
+FixedFrozen	dom_r1	11	fiber tracts	Mbp 477
+FixedFrozen	dom_r1	12	CA1	Fibcd1 95, Wfs1 118; CT CA1-ProS 0.43
+FixedFrozen	dom_r1	13	HIP neuropil	Ddn, Camk2a, mt-genes DE, Gfap 69
+FixedFrozen	dom_r1	14	HIP neuropil	Ddn, Adcy1, Camk2a DE, Gfap 89; DG molecular layer side
+FixedFrozen	dom_r1	15	PAL	Gad1 68, Pvalb 65, Mbp 251, Sparc/Slc6a11/Slc6a1 DE; between STR and TH, pallidum (GP)
+FixedFrozen	dom_r1	16	HY	Hap1, Nap1l5, Ndn, Tmem130, Resp18 DE
+FixedFrozen	dom_r1	17	STR	Ppp1r1b 313, Penk 321; CT STR D1/D2
+FixedFrozen	dom_r1	18	choroid plexus	Ttr 327, Foxj1 100, Enpp2 DE
+FixedFrozen	dom_r1	19	meninges	Ptgds 313, Gfap 170, Dcn/Vim DE
+FixedFrozen	dom_r1	20	nan	deep isocortex band -> sub_CTX
+FixedFrozen	dom_r1	21	PIR	CT L2/3 IT PIR-ENTl 0.43, Lmo3 DE, Cxcl14 55; lateral surface band
+FixedFrozen	dom_r1	22	RT	Pvalb 300, Gad1 191, Six3 DE; CT RT-ZI Gnb3 0.24
+FixedFrozen	dom_r1	23	STRv	Ppp1r1b 209, Penk 176, Tac1 DE, Wfs1 153, Crym 95; CT OT D3 Folh1 0.14; ventral striatum / olfactory tubercle
+FixedFrozen	dom_r1	24	DG	Prox1 142, C1ql2 148; CT DG Glut 0.69
+FixedFrozen	dom_r1	25	ependyma	Ccdc153, Rarres2 DE, Foxj1 131; third ventricle
+FreshFrozen	dom_r1	0	PAL	Gad1 146, Pvalb 51, Gad2/Slc32a1 DE; CT NDB-SI-MA-STRv Lhx8 0.17; ventral pallidum / substantia innominata
+FreshFrozen	dom_r1	1	HY	Hap1, Nap1l5, Tmem130, Baiap3 DE
+FreshFrozen	dom_r1	2	sAMY/BST	Penk 233, Wfs1 189, Gad1 113, Meis2 DE
+FreshFrozen	dom_r1	3	STRv	Ppp1r1b 305, Penk 328, Wfs1 159, Crym 104; ventral striatum (ACB)
+FreshFrozen	dom_r1	4	fiber tracts	Mbp 531; CT Oligo 0.93
+FreshFrozen	dom_r1	5	fiber tracts	Mbp 436, Mobp/Plp1 DE; internal capsule bundles in STR
+FreshFrozen	dom_r1	6	STR	Ppp1r1b 349, Penk 317; caudoputamen
+FreshFrozen	dom_r1	7	TH Prkcd-	Calb2, Tcf7l2, Slc17a6, Zic1 DE, Prkcd 37; CT PVT-PT Ntrk1 0.58; midline thalamus
+FreshFrozen	dom_r1	8	TH Prkcd-	C1ql2 113, Tcf7l2 102, Prkcd 42, Mbp 356; CT AD Serpinb7 0.29; anterodorsal nucleus with fibres
+FreshFrozen	dom_r1	9	TH Prkcd+	Prkcd 173, Tcf7l2 161; CT TH Prkcd Grin2c 0.55
+FreshFrozen	dom_r1	10	nan	pial rim -> sub_CTX
+FreshFrozen	dom_r1	11	nan	superficial isocortex (L1-like) -> sub_CTX
+FreshFrozen	dom_r1	12	nan	retrosplenial cortex -> sub_CTX
+FreshFrozen	dom_r1	13	nan	medial cortex deep -> sub_CTX
+FreshFrozen	dom_r1	14	nan	L2/3 band -> sub_CTX
+FreshFrozen	dom_r1	15	fiber tracts	Mbp 454; alveus / fimbria
+FreshFrozen	dom_r1	16	choroid plexus	Ttr 630, Kl, Enpp2 DE; CT CHOR 0.51
+FreshFrozen	dom_r1	17	nan	L5 band -> sub_CTX
+FreshFrozen	dom_r1	18	nan	lateral cortex -> sub_CTX
+FreshFrozen	dom_r1	19	PIR	CT L2/3 IT PIR-ENTl 0.44, Lmo3 DE
+FreshFrozen	dom_r1	20	nan	L6 band -> sub_CTX
+FreshFrozen	dom_r1	21	CLA/EP	Nr4a2 DE, Ccn2 71; CT CLA-EPd-CTX Car3 0.14 + IT EP-CLA 0.13
+FreshFrozen	dom_r1	22	nan	L4 band -> sub_CTX
+FreshFrozen	dom_r1	23	nan	L6b band -> sub_CTX
+FreshFrozen	dom_r1	24	CA3	Bok 131, Cabp7 DE; CT CA3 Glut 0.44
+FreshFrozen	dom_r1	25	CA1	Fibcd1 85, Wfs1 131; CT CA1-ProS 0.32
+FreshFrozen	dom_r1	26	HIP neuropil	Ddn, Camk2a, mt-genes DE, Gfap 204
+FreshFrozen	dom_r1	27	nan	mixed: Ttr 346 + Ptgds 339 + Ddn/Adcy1 (choroid plexus, meninges and neuropil where the anterior hippocampus meets the midline)
+FreshFrozen	dom_r1	28	TH Prkcd-	Shox2, Cbln1 DE, Prkcd 33; CT AV Col27a1 0.42; anteroventral nucleus
+FreshFrozen	dom_r1	29	ependyma	Foxj1 191, Ccdc153/Tmem212 DE; CT Ependymal 0.63
+FreshFrozen	dom_r1	30	vessels	Acta2/Tagln/Myh11 DE, Cldn5 117
+FreshFrozen	dom_r1	31	PIR	mt / astro DE, Cxcl14 105; CT PIR-ENTl 0.12; molecular layer of the piriform cortex
+FreshFrozen	dom_r1	32	HAB	Tac2 332, Syt6 193; CT MH Tac2 0.94
+FreshFrozen	dom_r1	33	DG	Prox1 166, C1ql2 163; CT DG Glut 0.77
+FFPE	sub_CTXhi	0	CTX L6	Rprm 30, Crym 26, Tle4 23, Foxp2 22, Syt6 16; CT L6 IT / L6 CT
+FFPE	sub_CTXhi	1	CTX L6	Rprm 33, Crym 25, Foxp2 20, Tle4 14; lateral part of the L6 band
+FFPE	sub_CTXhi	2	CTX L6	68 bins, Rprm 45, Tle4 32, Mbp 326; L6 next to the white matter
+FFPE	sub_CTXhi	3	CTX L6b	Ccn2 95, Cplx3 59, Nxph4 14; CT L6b CTX
+FFPE	sub_CTXhi	4	CTX L5	Etv1 33, Parm1 18, Fezf2 20, Pvalb 38; dorsomedial part of the L5 band
+FFPE	sub_CTXhi	5	RSP	Tshz2 113, Etv1 29, Pvalb 70; medial-most cortex; CT L2/3 IT RSP
+FFPE	sub_CTXhi	6	CTX L5	Etv1 36, Tshz2 39, Parm1 23, Fezf2 17, Bcl11b 17, Pvalb 95
+FFPE	sub_CTXhi	7	CTX L6	65 bins, Rprm 29, Crym 45, Tle4 37, Mbp 326; CT L6 CT
+FFPE	sub_CTXhi	8	CLA/EP	Ccn2 95, Nxph4 10, broad ventrolateral deep strip; CT L6b EPd 0.11
+FFPE	sub_CTXhi	9	CTX L2/3	Lamp5 130, Calb1 101, Rasgrf2 133, Cux2 36, Otof 7
+FFPE	sub_CTXhi	10	CTX L4	Rorb 96, Rspo1 38, Whrn 22, Cux2 38
+FFPE	sub_CTXhi	11	CTX L4	Rorb 49, Whrn 20; lateral part of the L4 band; CT L4/5 IT 0.19
+FFPE	sub_CTXhi	12	CTX L1	low UMI (405), Cxcl14 73, Reln 13, Ndnf 11, Gfap 55; band under the pia
+FFPE	sub_CTXhi	13	CTX L2/3	Lamp5 73, Rasgrf2 78, Calb1 47; dorsomedial upper layers
+FFPE	sub_CTXhi	14	CTX L4	Rorb 60, Whrn 25, Pvalb 65; CT L4/5 IT 0.30
+FFPE	sub_CTXhi	15	CTX L5	Bcl11b 26, Fezf2 14, Foxp2 21, Pvalb 77; CT L5 ET
+FFPE	sub_CTXhi	16	vessels	Itm2a, Pltp, Ptprb, Slc2a1, Cldn5 DE; capillary-rich upper-layer bins
+FFPE	sub_CTXhi	17	CTX lateral	Etv1 36, Rorb 23, Crym 25; lateral cortex, layers not separated; CT L5/6 IT TPE-ENT 0.11
+FFPE	sub_CTXhi	18	nan	149 microglia-rich bins (Hexb, C1qa, P2ry12)
+FFPE	sub_CTXhi	19	meninges	Ptgds 517, Gfap 113; pia
+FixedFrozen	sub_CTXhi	0	CTX L6	Rprm 38, Crym 49, Tle4 33, Mbp 233; medial L6 next to the cingulum; CT L6 CT 0.11
+FixedFrozen	sub_CTXhi	1	CTX L6b	Ccn2 140, Cplx3 87, Nxph4 27; CT L6b CTX 0.34
+FixedFrozen	sub_CTXhi	2	CTX L6	Rprm 75, Crym 63, Tle4 36, Foxp2 28, Syt6 18; CT L6 CT 0.19
+FixedFrozen	sub_CTXhi	3	CTX L5	Etv1 68, Crym 75, Fezf2 41, Bcl11b 39, Parm1 25; CT L5 ET 0.16
+FixedFrozen	sub_CTXhi	4	CTX L6	Rprm 53, Crym 37, Tle4 27, Foxp2 23; CT L6 IT / L6 CT
+FixedFrozen	sub_CTXhi	5	RSP	Tshz2 112, Etv1 78, Pvalb 76; medial-most cortex
+FixedFrozen	sub_CTXhi	6	CTX L5	Etv1 55, Parm1 27, Fezf2 26, Pvalb 62; CT L5 ET 0.13
+FixedFrozen	sub_CTXhi	7	CTX lateral	Etv1 39, Rorb 36, Crym 38; lateral cortex, layers not separated; CT L4/5 IT + L5/6 IT TPE-ENT
+FixedFrozen	sub_CTXhi	8	CTX L4	Rorb 85, Whrn 39, Rspo1 16; CT L4/5 IT 0.40
+FixedFrozen	sub_CTXhi	9	CTX L2/3	Lamp5 142, Calb1 107, Rasgrf2 147, Cux2 44, Otof 9; CT L2/3 IT 0.37
+FixedFrozen	sub_CTXhi	10	PIR	Lmo3, mt DE; CT L2/3 IT PIR-ENTl 0.13; ventrolateral surface
+FixedFrozen	sub_CTXhi	11	CTX L2/3	Calb1 107, Wfs1 106, Lamp5 52, Ccn3 DE; lateral L2/3; CT L2/3 IT 0.29
+FixedFrozen	sub_CTXhi	12	CLA/EP	Nr4a2, Synpr, Stk32c DE; CT CLA-EPd-CTX Car3 0.16; band deep to lateral L6
+FixedFrozen	sub_CTXhi	13	vessels	Vtn, Igfbp7, Rgs5, Pdgfrb DE; CT Endo / Peri
+FixedFrozen	sub_CTXhi	14	CLA/EP	Nr4a2, Nnat DE; CT L6b EPd 0.08 + CLA-EPd 0.08; ventrolateral deep
+FixedFrozen	sub_CTXhi	15	CTX L1	low UMI (410), Cxcl14 63, Reln 13, Ndnf 8, astro / mt DE; band under the pia
+FixedFrozen	sub_CTXhi	16	nan	542 microglia-rich bins (Hexb, C1qa, P2ry12)
+FixedFrozen	sub_CTXhi	17	RSP	Tshz2 104, Etv1 85, Fezf2 42; medial cortex next to the midline
+FixedFrozen	sub_CTXhi	18	meninges	Ptgds 436, Gfap 99; pia
+FreshFrozen	sub_CTXhi	0	meninges	Ptgds 500, Gfap 195; pia
+FreshFrozen	sub_CTXhi	1	meninges	Ptgds 404, Gfap 219; pia at the midline
+FreshFrozen	sub_CTXhi	2	CTX L5	Etv1 111, Crym 86, Fezf2 53, Bcl11b 51; CT L5 ET 0.29
+FreshFrozen	sub_CTXhi	3	nan	87 bins, Ptgds / Cldn5 (pia vessels)
+FreshFrozen	sub_CTXhi	4	CTX lateral	Etv1 54, Crym 66, Calb1 56, C1ql3 DE; lateral cortex, layers not separated; CT L5 ET 0.15 + L5/6 IT TPE-ENT 0.10
+FreshFrozen	sub_CTXhi	5	CTX L6	Tle4 70, Rprm 67, Syt6 27, Mbp 329; medial L6 next to the cingulum; CT L6 CT 0.23
+FreshFrozen	sub_CTXhi	6	CTX L6b	Ccn2 172, Cplx3 124, Nxph4 37; CT L6b CTX 0.40
+FreshFrozen	sub_CTXhi	7	CLA/EP	Nr4a2, Synpr, Stk32c DE; CT CLA-EPd-CTX Car3 0.20
+FreshFrozen	sub_CTXhi	8	CTX L5	Etv1 81, Parm1 59, Fezf2 45, Pvalb 114; CT L5 ET 0.24
+FreshFrozen	sub_CTXhi	9	CTX L6	Rprm 120, Crym 69, Tle4 65, Foxp2 58, Syt6 44; CT L6 CT 0.31
+FreshFrozen	sub_CTXhi	10	CTX L6	Rprm 69, Tle4 55, Foxp2 41, Syt6 36; CT L6 CT 0.20 + L6 IT 0.18
+FreshFrozen	sub_CTXhi	11	vessels	Vtn, Igfbp7, Rgs5, Pdgfrb DE; CT Peri 0.25
+FreshFrozen	sub_CTXhi	12	RSP	Tshz2 149, Etv1 132, Pvalb 149; CT L4 RSP-ACA 0.14
+FreshFrozen	sub_CTXhi	13	RSP	Tshz2 152; CT L2/3 IT RSP 0.16
+FreshFrozen	sub_CTXhi	14	CTX L5	165 bins, Etv1 82, Fezf2 44, Bcl11b 31
+FreshFrozen	sub_CTXhi	15	RSP	Tshz2 162, Cxcl14 135; CT L2/3 IT RSP 0.33
+FreshFrozen	sub_CTXhi	16	CTX L4	Rorb 78, Whrn 71; CT L4/5 IT 0.46
+FreshFrozen	sub_CTXhi	17	CTX L2/3	Calb1 125, Wfs1 104, Lamp5 87, Lypd1 DE; lateral L2/3; CT L2/3 IT 0.40
+FreshFrozen	sub_CTXhi	18	CTX L4	Rorb 133, Rspo1 47, Whrn 56; CT L4/5 IT 0.66
+FreshFrozen	sub_CTXhi	19	CTX L1	low UMI (1407 vs ~4500), Cxcl14 117, Reln 23, Ndnf 19, astro / mt DE; band under the pia
+FreshFrozen	sub_CTXhi	20	nan	811 microglia-rich bins (Hexb, C1qa, P2ry12)
+FreshFrozen	sub_CTXhi	21	CTX L2/3	Lamp5 193, Calb1 161, Rasgrf2 183, Cux2 73, Otof 18; CT L2/3 IT 0.68
+FreshFrozen	sub_CTXhi	22	CTX L2/3	Lamp5 112, Calb1 107, Rasgrf2 133; dorsomedial L2/3

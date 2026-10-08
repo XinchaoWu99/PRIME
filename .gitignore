@@ -72,3 +72,8 @@ Thumbs.db
 scratch/
 tmp/
 *.tmp
+
+# Local configuration and notebook outputs
+pipeline/config.local.yaml
+figures/
+*.log
