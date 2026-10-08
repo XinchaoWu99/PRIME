@@ -1,0 +1,279 @@
+# Settings of the analysis pipeline (pipeline/) and of the figure notebooks (notebooks/).
+#
+# Locations: edit the block below, or leave this file untouched and put the same keys into
+# `config.local.yaml` next to it (not tracked; merged over this file). `${data_root}`, `${out_dir}` and
+# `${software_dir}` are expanded in every path of this file. PRIME_CONFIG=<file> selects another file.
+
+data_root: /path/to/data            # input data sets (sources are noted under `datasets` and `visiumhd_brain`)
+out_dir: /path/to/results           # everything the pipeline writes
+software_dir: /path/to/software     # unmodified clones of SpaBatch, SpaCross, SpaMask, scGPT
+figure_dir: figures                 # outputs of the notebooks (relative paths start at the repository root)
+cache_dir: figures/_cache           # UMAP coordinates etc., recomputed when missing
+rscript: Rscript                    # R with Seurat 5, SeuratWrappers, PRECAST, monocle3
+n_jobs: 16
+
+# Seeds. Projection t of a PRIME run uses random_state = seed + t, so seeds closer than the number of
+# projections apart would share projections; a spacing of 1000 keeps ensembles disjoint.
+seeds: [42, 1042, 2042, 3042, 4042]
+eval_pcs: 50          # outputs wider than this are evaluated on their top PCs (null = raw)
+
+# PRIME (expression only) uses one setting for every scRNA-seq data set.
+prime_default: &prime_default {n_projections: 4, target_dim: 128, k_neighbors: 15, consensus_threshold: 0.4, sigma: 0.1}
+
+datasets:
+  jurkat:                   # Jurkat / 293T 50:50 mixture and the two pure samples (10x Genomics)
+    path: ${data_root}/jurkat_293t/adata_mix_293T_jurkat.h5ad
+    batch: batch
+    label: cell_type        # labels of the mixture come from Leiden clustering + markers
+    input: lognorm
+    hvg: {n_top_genes: 2000, flavor: cell_ranger}
+    mode: prime
+    default: *prime_default
+  immune:                   # human immune integration benchmark (Luecken et al. 2022): 33,506 cells, 10 batches
+    path: ${data_root}/immune/Immune_ALL_human.h5ad
+    batch: batch
+    label: final_annotation
+    input: lognorm
+    hvg: {n_top_genes: 2000, flavor: cell_ranger}
+    mode: prime
+    default: *prime_default
+  lung:                     # NSCLC atlas (Salcher et al. 2022), lung adenocarcinoma: 410,927 cells, 12 datasets
+    path: ${data_root}/nsclc/NSCLC_atlas.h5ad
+    subset: {disease: lung adenocarcinoma}
+    batch: dataset
+    label: ann_fine
+    input: counts
+    counts_layer: count
+    hvg: {n_top_genes: 2000, flavor: cell_ranger}
+    mode: prime
+    default: *prime_default
+  nsclc:                    # the full atlas: 892,296 cells, 21 datasets (scaling)
+    path: ${data_root}/nsclc/NSCLC_atlas.h5ad
+    batch: dataset
+    label: ann_fine
+    input: counts
+    counts_layer: count
+    hvg: {n_top_genes: 2000, flavor: cell_ranger}
+    mode: prime
+    default: *prime_default
+  dlpfc:                    # DLPFC (Maynard et al. 2021): 12 Visium sections of 3 donors
+    path: ${data_root}/dlpfc/DLPFC_merged.h5ad
+    batch: sample           # section
+    label: layer_guess
+    donor: subject
+    dev_donor: Br5292       # sections 151507-151510: used for parameter selection only
+    seeds: [0, 1000, 2000, 3000, 4000]
+    input: counts
+    mode: prime_st
+    default: {n_hvg: 3000, n_projections: 20, rp_dim: 256, k_mnn: 20, consensus_threshold: 0.4,
+              mnn_strategy: star, k_spatial: 6, lambda_anchor: 20.0, lambda_spatial: 1.0, n_comps: 100}
+  # Visium HD mouse brain, 16 um bins after bin QC (written by visiumhd/prepare_cohort.py and
+  # visiumhd/annotate_regions.py). batch = sample = preservation protocol (FFPE / FreshFrozen / FixedFrozen).
+  brain_sections:           # all tissue bins of the three sections
+    path: ${out_dir}/visiumhd/brain/brain_16um_sections.h5ad
+    batch: sample
+    label: label_subclass   # per-bin cell-type reference; integration is scored on the region labels (--labels-tsv)
+    donor: sample
+    input: counts
+    mode: prime_st
+  brain_dg_tiles:           # one ~2 mm square per section around the dentate gyrus
+    path: ${out_dir}/visiumhd/brain/brain_16um_dg_tiles.h5ad
+    batch: sample
+    label: label_subclass
+    donor: sample
+    input: counts
+    mode: prime_st
+  brain_cortex_tiles:       # one ~2 mm square per section: cortical column down to the dorsal hippocampus
+    path: ${out_dir}/visiumhd/brain/brain_16um_cortex_tiles.h5ad
+    batch: sample
+    label: label_subclass
+    donor: sample
+    input: counts
+    mode: prime_st
+
+# Saved outputs of the per-data-set benchmarks (pipeline/benchmark/): integrated embeddings and scIB tables.
+benchmark:
+  immune:
+    dir: ${data_root}/immune
+    embeddings_h5ad: ${data_root}/immune/Immune_ALL_human_all_embeddings.h5ad
+    results_csv: ${data_root}/immune/benchmark_results_with_isolated_labels.csv
+  lung:
+    dir: ${data_root}/nsclc/lung_adenocarcinoma
+    embeddings_h5ad: ${data_root}/nsclc/lung_adenocarcinoma/benchmarked_lung_cancer_integrated_full.h5ad
+    results_csv: ${data_root}/nsclc/lung_adenocarcinoma/benchmark_results_with_isolated_labels.csv
+  dlpfc:
+    data_dir: ${data_root}/dlpfc                     # the 12 Space Ranger folders and DLPFC_merged.h5ad
+    results_dir: ${data_root}/dlpfc/results          # <method>_embedding.npy, benchmark tables
+
+# Parameter sensitivity: one factor at a time around `default`, then two 3 x 3 interactions.
+grids:
+  prime:
+    one_factor:
+      n_projections: [1, 5, 10, 20, 50, 100]
+      target_dim: [16, 32, 64, 128, 256]
+      k_neighbors: [5, 10, 20, 50]
+      consensus_threshold: [0.3, 0.5, 0.7, 0.9]
+      sigma: [0.05, 0.1, 0.5, 1.0]
+    interactions:
+      - {n_projections: [5, 20, 50], consensus_threshold: [0.3, 0.5, 0.7]}
+      - {target_dim: [32, 128, 256], k_neighbors: [10, 20, 50]}
+  prime_st:
+    one_factor:
+      n_projections: [1, 5, 10, 20, 50]
+      rp_dim: [32, 64, 128, 256]
+      k_mnn: [5, 10, 20, 50]
+      consensus_threshold: [0.3, 0.5, 0.7, 0.9]
+      k_spatial: [4, 6, 8, 12]
+      lambda_anchor: [2.0, 10.0, 20.0, 40.0, 200.0]
+      lambda_spatial: [0.1, 0.5, 1.0, 2.0, 10.0]
+    interactions:
+      - {n_projections: [5, 20, 50], consensus_threshold: [0.3, 0.5, 0.7]}
+      - {rp_dim: [64, 128, 256], k_mnn: [10, 20, 50]}
+
+# Module ablations = named overrides of `default`.
+ablations:
+  prime:
+    full: {}
+    single_projection: {n_projections: 1}
+    no_consensus: {consensus_threshold: 1.0e-9}      # every MNN seen in any projection is kept
+    no_smoothing: {smoothing: false}                 # correction vectors not kNN-smoothed
+  prime_st:
+    full: {}
+    single_projection: {n_projections: 1}
+    no_consensus: {consensus_threshold: 1.0e-9}
+    no_context_reweight: {reweight_anchors_by_spatial_context: false}
+    no_expr_gate: {gate_spatial_by_expr: false}
+    anchor_laplacian_only: {lambda_spatial: 0.0}     # expression graph only
+    spatial_laplacian_only: {lambda_anchor: 0.0}     # no cross-section edges at all
+    no_laplacian: {lambda_anchor: 0.0, lambda_spatial: 0.0}   # returns the SVD input Z0
+
+# DLPFC domain validation.
+domains:
+  n_domains: 7                       # the known number of layers (stated as a prior)
+  leiden_resolution: 0.5             # prior-free analysis; fixed on the development sections only
+  markers: markers_dlpfc.tsv         # columns: layer, gene (fixed before looking at results)
+
+# Runtime / memory scaling.
+scaling:
+  dataset: nsclc
+  n_cells: [10000, 50000, 100000, 250000, 500000]   # nested stratified subsets, plus the full atlas
+  n_batches: [2, 4, 8, 16]
+  n_cells_batch_axis: 40000
+  methods: [prime, harmony, scanorama, scvi]
+  timeout_h: 24
+
+# 10x Genomics public Visium HD mouse brain: the same tissue prepared three ways
+# (Space Ranger binned outputs, CC BY 4.0).
+visiumhd_brain:
+  samples:
+    FFPE: ${data_root}/visium_hd_mouse_brain/FFPE
+    FreshFrozen: ${data_root}/visium_hd_mouse_brain/FreshFrozen
+    FixedFrozen: ${data_root}/visium_hd_mouse_brain/FixedFrozen
+  celltypist_model: Mouse_Whole_Brain.pkl          # CellTypist model name or path (Allen whole mouse brain subclasses)
+  taxonomy: ${data_root}/visium_hd_mouse_brain/abc_wmb_taxonomy_pivoted.csv   # Allen WMB taxonomy: subclass -> class
+  # Display only (maps; no method sees it): 2 x 2 matrix applied to (x, -y) in um so that every section is drawn
+  # like the FFPE one (coronal hemisection, dorsal up, midline on the right). Read off landmarks (RSP, MH, V3,
+  # PIR, HY): FreshFrozen = FFPE rotated by 90 degrees; FixedFrozen = FFPE mirrored.
+  display: {FFPE: [[1, 0], [0, 1]], FreshFrozen: [[0, 1], [-1, 0]], FixedFrozen: [[0, -1], [-1, 0]]}
+
+# Spatial integration methods (spatial/run_methods.py). `default` = the settings of each method's official
+# tutorial. t1-t9 = the tuning grid: symmetric changes of each method's key parameters around its default,
+# fixed before any tuned result was computed. Every setting runs with seed 0; the selection
+# (spatial/select_settings.py) uses the labels of the development donor only; the selected setting then
+# runs with 5 seeds and is reported on the other donors.
+baselines:
+  prime:        # overrides of datasets.dlpfc.default
+    default: {}
+    t1: {lambda_anchor: 10.0}
+    t2: {lambda_anchor: 40.0}
+    t3: {lambda_spatial: 0.5}
+    t4: {lambda_spatial: 2.0}
+    t5: {n_projections: 10, consensus_threshold: 0.5}
+    t6: {n_projections: 50, consensus_threshold: 0.5}
+    t7: {rp_dim: 128}
+    t8: {k_mnn: 10}
+    t9: {k_spatial: 8}
+    unintegrated: {lambda_anchor: 0.0, lambda_spatial: 0.0}   # returns the SVD input (reference, not a tuning setting)
+    # prime_st(integration="transport"), used for the Visium HD sections. lambda_spatial is given explicitly
+    # because the dict is merged into datasets.dlpfc.default, which sets it to 1.0.
+    transport: {integration: transport, lambda_spatial: 0.0}
+  staligner:
+    default: {rad_cutoff: 150, n_hvg: 10000, margin: 1.0, knn_neigh: 100}
+    t1: {rad_cutoff: 150, n_hvg: 10000, margin: 1.0, knn_neigh: 50}
+    t2: {rad_cutoff: 150, n_hvg: 10000, margin: 1.0, knn_neigh: 200}
+    t3: {rad_cutoff: 150, n_hvg: 10000, margin: 0.5, knn_neigh: 100}
+    t4: {rad_cutoff: 150, n_hvg: 10000, margin: 2.0, knn_neigh: 100}
+    t5: {rad_cutoff: 150, n_hvg: 10000, margin: 1.0, knn_neigh: 100, n_epochs: 500}
+    t6: {rad_cutoff: 150, n_hvg: 10000, margin: 1.0, knn_neigh: 100, n_epochs: 1500}
+    t7: {rad_cutoff: 120, n_hvg: 10000, margin: 1.0, knn_neigh: 100}
+    t8: {rad_cutoff: 200, n_hvg: 10000, margin: 1.0, knn_neigh: 100}
+    t9: {rad_cutoff: 150, n_hvg: 5000, margin: 1.0, knn_neigh: 100}
+    hd16: {rad_cutoff: 23, n_hvg: 10000, margin: 1.0, knn_neigh: 100}  # Visium HD: 16-um grid in microns, 8 neighbours
+  graphst:
+    default: {dim_output: 64, epochs: 600}
+    t1: {dim_output: 32, epochs: 600}
+    t2: {dim_output: 128, epochs: 600}
+    t3: {dim_output: 64, epochs: 300}
+    t4: {dim_output: 64, epochs: 1000}
+    t5: {dim_output: 64, epochs: 600, alpha: 5}
+    t6: {dim_output: 64, epochs: 600, alpha: 20}
+    t7: {dim_output: 64, epochs: 600, beta: 0.5}
+    t8: {dim_output: 64, epochs: 600, beta: 2}
+    t9: {dim_output: 64, epochs: 600, learning_rate: 0.005}
+  precast:
+    default: {K: 7, n_hvg: 2000}
+    t1: {K: 7, n_hvg: 2000, q: 10}
+    t2: {K: 7, n_hvg: 2000, q: 20}
+    t3: {K: 7, n_hvg: 2000, q: 30}
+    t4: {K: 7, n_hvg: 3000}
+    t5: {K: 7, n_hvg: 3000, q: 20}
+    t6: {K: 5, n_hvg: 2000}
+    t7: {K: 6, n_hvg: 2000}
+    t8: {K: 8, n_hvg: 2000}
+    t9: {K: 9, n_hvg: 2000}
+  spabatch:
+    default: {k_cutoff: 8, n_hvg: 3000, pre_epochs: 500, epochs: 1000, mask_rate: 0.2}   # Run_DLPFC_*.ipynb, all 12 sections
+    t1: {k_cutoff: 6, n_hvg: 3000, pre_epochs: 500, epochs: 1000, mask_rate: 0.2}
+    t2: {k_cutoff: 12, n_hvg: 3000, pre_epochs: 500, epochs: 1000, mask_rate: 0.2}
+    t3: {k_cutoff: 8, n_hvg: 2000, pre_epochs: 500, epochs: 1000, mask_rate: 0.2}
+    t4: {k_cutoff: 8, n_hvg: 5000, pre_epochs: 500, epochs: 1000, mask_rate: 0.2}
+    t5: {k_cutoff: 8, n_hvg: 3000, pre_epochs: 500, epochs: 1000, mask_rate: 0.1}
+    t6: {k_cutoff: 8, n_hvg: 3000, pre_epochs: 500, epochs: 1000, mask_rate: 0.4}
+    t7: {k_cutoff: 8, n_hvg: 3000, pre_epochs: 500, epochs: 500, mask_rate: 0.2}
+    t8: {k_cutoff: 8, n_hvg: 3000, pre_epochs: 500, epochs: 1500, mask_rate: 0.2}
+    t9: {k_cutoff: 8, n_hvg: 3000, pre_epochs: 250, epochs: 1000, mask_rate: 0.2}
+    donor: {k_cutoff: 8, n_hvg: 3000, pre_epochs: 500, epochs: 1000, mask_rate: 0.2, per_donor: true}   # one donor at a time
+  spacross:
+    default: {n_hvg: 5000, k_cutoff: 12, topk_neighs_inter: 20}   # SC_BC_pipeline, all 12 sections
+    donor: {n_hvg: 5000, k_cutoff: 12, stack_3d: true, per_donor: true}   # Visium10x_DLPFC_Multi.ipynb, per donor
+    t1: {n_hvg: 5000, k_cutoff: 8, stack_3d: true, per_donor: true}
+    t2: {n_hvg: 5000, k_cutoff: 16, stack_3d: true, per_donor: true}
+    t3: {n_hvg: 3000, k_cutoff: 12, stack_3d: true, per_donor: true}
+    t4: {n_hvg: 8000, k_cutoff: 12, stack_3d: true, per_donor: true}
+    t5: {n_hvg: 5000, k_cutoff: 12, stack_3d: true, per_donor: true, model: {mask_rate: 0.3}}
+    t6: {n_hvg: 5000, k_cutoff: 12, stack_3d: true, per_donor: true, model: {mask_rate: 0.7}}
+    t7: {n_hvg: 5000, k_cutoff: 12, stack_3d: true, per_donor: true, model: {latent_dim: 32}}
+    t8: {n_hvg: 5000, k_cutoff: 12, stack_3d: true, per_donor: true, train: {epochs: 150}}
+    t9: {n_hvg: 5000, k_cutoff: 12, stack_3d: true, per_donor: true, train: {epochs: 600}}
+  spamask:
+    default: {n_hvg: 5000, k_cutoff: 21, max_epoch: 1000, lam: 2, feat_mask_rate: 0.5, edge_drop_rate: 0.2, per_donor: true}   # DLPFC_MULTISLICES.py
+    t1: {n_hvg: 5000, k_cutoff: 12, max_epoch: 1000, lam: 2, feat_mask_rate: 0.5, edge_drop_rate: 0.2, per_donor: true}
+    t2: {n_hvg: 5000, k_cutoff: 30, max_epoch: 1000, lam: 2, feat_mask_rate: 0.5, edge_drop_rate: 0.2, per_donor: true}
+    t3: {n_hvg: 5000, k_cutoff: 21, max_epoch: 1000, lam: 1, feat_mask_rate: 0.5, edge_drop_rate: 0.2, per_donor: true}
+    t4: {n_hvg: 5000, k_cutoff: 21, max_epoch: 1000, lam: 3, feat_mask_rate: 0.5, edge_drop_rate: 0.2, per_donor: true}
+    t5: {n_hvg: 5000, k_cutoff: 21, max_epoch: 1000, lam: 2, feat_mask_rate: 0.3, edge_drop_rate: 0.2, per_donor: true}
+    t6: {n_hvg: 5000, k_cutoff: 21, max_epoch: 1000, lam: 2, feat_mask_rate: 0.7, edge_drop_rate: 0.2, per_donor: true}
+    t7: {n_hvg: 5000, k_cutoff: 21, max_epoch: 1000, lam: 2, feat_mask_rate: 0.5, edge_drop_rate: 0.1, per_donor: true}
+    t8: {n_hvg: 5000, k_cutoff: 21, max_epoch: 1000, lam: 2, feat_mask_rate: 0.5, edge_drop_rate: 0.4, per_donor: true}
+    t9: {n_hvg: 5000, k_cutoff: 21, max_epoch: 500, lam: 2, feat_mask_rate: 0.5, edge_drop_rate: 0.2, per_donor: true}
+
+# scGPT (whole-human checkpoint), zero-shot, on the human immune and NSCLC lung-adenocarcinoma benchmarks:
+# same cells, same 2,000 HVGs and same scIB protocol as the other methods (scgpt_zeroshot/). scGPT 0.2.4 needs
+# an older anndata than the rest of the pipeline, so inputs are prepared and embeddings are scored in the main
+# environment and only plain .npz / .tsv / .npy files cross the environment boundary.
+scgpt:
+  repo: ${software_dir}/scGPT
+  model_dir: ${software_dir}/scGPT/data/pretrained_model/scGPT_human
+  zeroshot:                # zero-shot tutorial: embed_data on the HVGs, <cls> embedding, no batch information
+    max_length: 1200
+    batch_size: 64

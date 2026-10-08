@@ -1,0 +1,11 @@
+layer	gene	source
+Layer1	RELN	classic L1 marker
+Layer1	AQP4	Maynard 2021 (layer-enriched)
+Layer2	HPCAL1	Maynard 2021 (layer-enriched)
+Layer3	FREM3	Maynard 2021 (layer-enriched)
+Layer4	RORB	classic L4 marker
+Layer5	PCP4	Maynard 2021 (layer-enriched)
+Layer5	TRABD2A	Maynard 2021 (layer-enriched)
+Layer6	KRT17	Maynard 2021 (layer-enriched)
+WM	MOBP	Maynard 2021 (layer-enriched)
+WM	MBP	classic oligodendrocyte/WM marker
